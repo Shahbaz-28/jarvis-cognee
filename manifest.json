@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Jarvis VO",
+  "version": "0.1.0",
+  "description": "A friend in your tab — remembers what you do and helps you continue.",
+  "action": {
+    "default_title": "Jarvis VO"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.ts",
+    "type": "module"
+  },
+  "permissions": ["activeTab", "scripting", "storage", "sidePanel", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "icons": {
+    "16": "public/icons/icon16.png",
+    "48": "public/icons/icon48.png",
+    "128": "public/icons/icon128.png"
+  }
+}
