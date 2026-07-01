@@ -1,0 +1,7 @@
+# Copy this file to .dev.vars and fill in your real keys.
+# NEVER commit .dev.vars to git.
+
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+ASSEMBLYAI_API_KEY=your-assemblyai-key-here
+ELEVENLABS_API_KEY=your-elevenlabs-key-here
+ELEVENLABS_VOICE_ID=your-voice-id-here

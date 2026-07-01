@@ -13,11 +13,28 @@
     "service_worker": "src/background/service-worker.ts",
     "type": "module"
   },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://*/*"],
+      "js": ["src/content/highlight.ts"],
+      "run_at": "document_idle"
+    }
+  ],
   "permissions": ["activeTab", "scripting", "storage", "sidePanel", "tabs"],
   "host_permissions": ["<all_urls>"],
   "icons": {
     "16": "public/icons/icon16.png",
     "48": "public/icons/icon48.png",
     "128": "public/icons/icon128.png"
+  },
+  "commands": {
+    "open-jarvis-vo": {
+      "suggested_key": {
+        "default": "Alt+Shift+J",
+        "windows": "Alt+Shift+J",
+        "mac": "Alt+Shift+J"
+      },
+      "description": "Open Jarvis VO side panel"
+    }
   }
 }
