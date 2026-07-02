@@ -15,6 +15,10 @@ interface AnswerPanelProps {
   onClearHighlights: () => void;
   onToggleReadAloud: () => void;
   onRetry?: () => void;
+  onFeedbackPositive?: () => void;
+  onFeedbackNegative?: () => void;
+  feedbackStatusMessage?: string | null;
+  isFeedbackPending?: boolean;
 }
 
 function SpeakerIcon() {
@@ -42,6 +46,10 @@ export default function AnswerPanel({
   onClearHighlights,
   onToggleReadAloud,
   onRetry,
+  onFeedbackPositive,
+  onFeedbackNegative,
+  feedbackStatusMessage,
+  isFeedbackPending = false,
 }: AnswerPanelProps) {
   if (isLoading) {
     const loadingLabel =
@@ -139,6 +147,34 @@ export default function AnswerPanel({
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
           {answer}
         </p>
+        {onFeedbackPositive || onFeedbackNegative ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+            <span className="text-xs text-slate-500">Was this helpful?</span>
+            {onFeedbackPositive ? (
+              <button
+                type="button"
+                disabled={isFeedbackPending}
+                onClick={onFeedbackPositive}
+                className="cursor-pointer rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                👍 Yes
+              </button>
+            ) : null}
+            {onFeedbackNegative ? (
+              <button
+                type="button"
+                disabled={isFeedbackPending}
+                onClick={onFeedbackNegative}
+                className="cursor-pointer rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 hover:border-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                👎 No
+              </button>
+            ) : null}
+            {feedbackStatusMessage ? (
+              <span className="text-xs text-emerald-600">{feedbackStatusMessage}</span>
+            ) : null}
+          </div>
+        ) : null}
         {readAloudStatusMessage ? (
           <p className="mt-2 text-xs text-amber-600">{readAloudStatusMessage}</p>
         ) : null}

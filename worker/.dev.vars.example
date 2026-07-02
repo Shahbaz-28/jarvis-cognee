@@ -5,3 +5,9 @@ ANTHROPIC_API_KEY=sk-ant-your-key-here
 ASSEMBLYAI_API_KEY=your-assemblyai-key-here
 ELEVENLABS_API_KEY=your-elevenlabs-key-here
 ELEVENLABS_VOICE_ID=your-voice-id-here
+
+# Cognee Cloud — from platform.cognee.ai → API Keys
+COGNEE_API_KEY=your-cognee-api-key-here
+COGNEE_BASE_URL=https://tenant-YOUR-TENANT-ID.aws.cognee.ai
+COGNEE_TENANT_ID=your-tenant-id-here
+COGNEE_DATASET_NAME=jarvis_vo

@@ -108,6 +108,8 @@ export async function runJarvisOrchestrator(params: {
   tabId: number;
   windowId: number;
   priorTurns: ConversationTurn[];
+  recalledMemoryContext?: string | null;
+  isMemoryIntentQuestion?: boolean;
 }): Promise<JarvisOrchestratorResult> {
   const toolContext: ToolExecutionContext = {
     tabId: params.tabId,
@@ -118,7 +120,9 @@ export async function runJarvisOrchestrator(params: {
     params.question,
     params.screenshotBase64,
     params.priorTurns,
-    params.domContextText
+    params.domContextText,
+    params.recalledMemoryContext ?? null,
+    params.isMemoryIntentQuestion ?? false
   );
 
   let accumulatedActionResults: ActionResult[] = [];

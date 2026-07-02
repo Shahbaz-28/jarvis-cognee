@@ -111,3 +111,39 @@ export async function saveConversationSession(
 export async function clearConversationSession(): Promise<void> {
   await chrome.storage.session.remove(SESSION_STORAGE_KEY);
 }
+
+/** Summarize pages and questions from the current panel session for navigation-style recall. */
+export function buildRecentPanelActivitySummary(
+  priorTurns: ConversationTurn[]
+): string {
+  if (priorTurns.length === 0) {
+    return "";
+  }
+
+  const pageActivityLines: string[] = [];
+  const seenPageUrls = new Set<string>();
+
+  for (let turnIndex = 0; turnIndex < priorTurns.length; turnIndex += 1) {
+    const turn = priorTurns[turnIndex];
+
+    if (turn.role !== "user") {
+      continue;
+    }
+
+    const pageUrlLabel = turn.pageUrl.trim() || "unknown page";
+    const questionPreview = turn.content.trim().slice(0, 120);
+
+    if (!seenPageUrls.has(pageUrlLabel)) {
+      seenPageUrls.add(pageUrlLabel);
+      pageActivityLines.push(
+        `- ${pageUrlLabel}${questionPreview ? ` (asked: "${questionPreview}")` : ""}`
+      );
+    }
+  }
+
+  if (pageActivityLines.length === 0) {
+    return "";
+  }
+
+  return `Recent activity in this panel session:\n${pageActivityLines.join("\n")}`;
+}

@@ -4,6 +4,7 @@ import {
   WORKER_CHAT_ENDPOINT,
 } from "./config";
 import type { ConversationTurn } from "./conversation-session";
+import { buildRecentPanelActivitySummary } from "./conversation-session";
 import { JARVIS_SYSTEM_PROMPT } from "./prompts";
 import type { JarvisToolDefinition } from "./tools";
 
@@ -88,7 +89,9 @@ export function buildInitialAgentMessages(
   question: string,
   imageBase64: string | null,
   priorTurns: ConversationTurn[],
-  domContextText: string | null = null
+  domContextText: string | null = null,
+  recalledMemoryContext: string | null = null,
+  isMemoryIntentQuestion = false
 ): ClaudeAgentMessage[] {
   const messages: ClaudeAgentMessage[] = [];
 
@@ -99,7 +102,15 @@ export function buildInitialAgentMessages(
     });
   }
 
-  const userQuestionText = buildUserQuestionText(question, domContextText);
+  const recentPanelActivitySummary = buildRecentPanelActivitySummary(priorTurns);
+
+  const userQuestionText = buildUserQuestionText(
+    question,
+    domContextText,
+    recalledMemoryContext,
+    recentPanelActivitySummary,
+    isMemoryIntentQuestion
+  );
 
   if (imageBase64) {
     messages.push({
@@ -131,13 +142,34 @@ export function buildInitialAgentMessages(
 
 function buildUserQuestionText(
   question: string,
-  domContextText: string | null
+  domContextText: string | null,
+  recalledMemoryContext: string | null,
+  recentPanelActivitySummary: string,
+  isMemoryIntentQuestion: boolean
 ): string {
-  if (!domContextText) {
-    return question;
+  const questionSections: string[] = [];
+
+  if (recentPanelActivitySummary) {
+    questionSections.push(recentPanelActivitySummary);
   }
 
-  return `Page structure snapshot:\n${domContextText}\n\nUser question: ${question}`;
+  if (recalledMemoryContext) {
+    questionSections.push(
+      `Memory from past conversations with this user:\n${recalledMemoryContext}`
+    );
+  } else if (isMemoryIntentQuestion && !recentPanelActivitySummary) {
+    questionSections.push(
+      "Background context from earlier sessions: (nothing relevant returned for this query)"
+    );
+  }
+
+  if (domContextText) {
+    questionSections.push(`Page structure snapshot:\n${domContextText}`);
+  }
+
+  questionSections.push(`User question: ${question}`);
+
+  return questionSections.join("\n\n");
 }
 
 export function buildScreenshotFollowUpMessage(

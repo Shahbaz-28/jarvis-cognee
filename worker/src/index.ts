@@ -4,12 +4,28 @@
  * API keys live here as secrets — not in the extension.
  *
  * Routes:
- *   POST /chat             → Anthropic Claude API (streaming)
- *   POST /tts              → ElevenLabs TTS API
- *   POST /transcribe-token → AssemblyAI websocket token
+ *   POST /chat               → Anthropic Claude API (streaming)
+ *   POST /tts                → ElevenLabs TTS API
+ *   POST /transcribe-token   → AssemblyAI websocket token
+ *   POST /memory/remember    → Cognee remember/entry
+ *   POST /memory/recall      → Cognee recall
+ *   POST /memory/improve     → Cognee improve (bridge session → graph)
+ *   POST /memory/feedback    → Cognee remember/entry (feedback)
  */
 
-interface Env {
+import {
+  improveMemorySession,
+  recallMemory,
+  rememberAnswerFeedback,
+  rememberConversationTurn,
+  type CogneeWorkerEnv,
+  type FeedbackEntryRequestBody,
+  type ImproveSessionRequestBody,
+  type RecallRequestBody,
+  type RememberTurnRequestBody,
+} from "./cognee";
+
+interface Env extends CogneeWorkerEnv {
   ANTHROPIC_API_KEY: string;
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
@@ -52,6 +68,22 @@ export default {
 
       if (url.pathname === "/transcribe-token") {
         return await handleTranscribeToken(env);
+      }
+
+      if (url.pathname === "/memory/remember") {
+        return await handleMemoryRemember(request, env);
+      }
+
+      if (url.pathname === "/memory/recall") {
+        return await handleMemoryRecall(request, env);
+      }
+
+      if (url.pathname === "/memory/improve") {
+        return await handleMemoryImprove(request, env);
+      }
+
+      if (url.pathname === "/memory/feedback") {
+        return await handleMemoryFeedback(request, env);
       }
     } catch (error) {
       console.error(`[${url.pathname}] Unhandled error:`, error);
@@ -156,5 +188,57 @@ async function handleTTS(request: Request, env: Env): Promise<Response> {
     headers: withCors({
       "content-type": response.headers.get("content-type") || "audio/mpeg",
     }),
+  });
+}
+
+async function handleMemoryRemember(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const requestBody = (await request.json()) as RememberTurnRequestBody;
+  const cogneeResult = await rememberConversationTurn(env, requestBody);
+
+  return new Response(JSON.stringify(cogneeResult), {
+    status: 200,
+    headers: withCors({ "content-type": "application/json" }),
+  });
+}
+
+async function handleMemoryRecall(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const requestBody = (await request.json()) as RecallRequestBody;
+  const cogneeResult = await recallMemory(env, requestBody);
+
+  return new Response(JSON.stringify(cogneeResult), {
+    status: 200,
+    headers: withCors({ "content-type": "application/json" }),
+  });
+}
+
+async function handleMemoryImprove(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const requestBody = (await request.json()) as ImproveSessionRequestBody;
+  const cogneeResult = await improveMemorySession(env, requestBody);
+
+  return new Response(JSON.stringify(cogneeResult), {
+    status: 200,
+    headers: withCors({ "content-type": "application/json" }),
+  });
+}
+
+async function handleMemoryFeedback(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const requestBody = (await request.json()) as FeedbackEntryRequestBody;
+  const cogneeResult = await rememberAnswerFeedback(env, requestBody);
+
+  return new Response(JSON.stringify(cogneeResult), {
+    status: 200,
+    headers: withCors({ "content-type": "application/json" }),
   });
 }

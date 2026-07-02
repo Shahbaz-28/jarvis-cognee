@@ -39,8 +39,18 @@ export type ExtensionMessage =
       windowId: number;
       pageUrl: string;
       priorTurns: ConversationTurn[];
+      prefetchedMemoryContext?: string | null;
     }
-  | { type: "CLEAR_HIGHLIGHTS"; tabId?: number };
+  | { type: "CLEAR_HIGHLIGHTS"; tabId?: number }
+  | { type: "RECALL_MEMORY"; query?: string }
+  | {
+      type: "SUBMIT_ANSWER_FEEDBACK";
+      question: string;
+      answer: string;
+      rating: "positive" | "negative";
+    }
+  | { type: "MARK_TASK_DONE" }
+  | { type: "IMPROVE_MEMORY_SESSION" };
 
 export type OrchestratorPhase = "thinking" | "acting";
 
@@ -62,15 +72,49 @@ export type ExtensionResponse =
       orchestratorSteps: number;
     }
   | { ok: true; kind: "clear" }
+  | { ok: true; kind: "memory"; recalledText: string }
+  | { ok: true; kind: "memory_action"; message: string }
   | { ok: false; error: string };
 
+const BACKGROUND_MESSAGE_TIMEOUT_MS: Record<string, number> = {
+  PING: 5000,
+  RECALL_MEMORY: 40000,
+  CLEAR_HIGHLIGHTS: 8000,
+  SUBMIT_ANSWER_FEEDBACK: 30000,
+  MARK_TASK_DONE: 30000,
+  IMPROVE_MEMORY_SESSION: 30000,
+  ASK_WITH_CONTEXT: 120000,
+};
+
+function getBackgroundMessageTimeoutMs(message: ExtensionMessage): number {
+  return BACKGROUND_MESSAGE_TIMEOUT_MS[message.type] ?? 20000;
+}
+
 export function sendMessageToBackground(
-  message: ExtensionMessage
+  message: ExtensionMessage,
+  timeoutMs?: number
 ): Promise<ExtensionResponse> {
+  const resolvedTimeoutMs = timeoutMs ?? getBackgroundMessageTimeoutMs(message);
+
   return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error("Jarvis background did not respond in time."));
+    }, resolvedTimeoutMs);
+
     chrome.runtime.sendMessage(message, (response: ExtensionResponse) => {
+      window.clearTimeout(timeoutId);
+
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+
+      if (response === undefined) {
+        reject(
+          new Error(
+            "Jarvis background returned no response. Reload the extension and try again."
+          )
+        );
         return;
       }
 

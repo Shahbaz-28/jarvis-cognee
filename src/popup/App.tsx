@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { DAILY_QUESTION_LIMIT } from "../lib/config";
+import { DAILY_QUESTION_LIMIT, MEMORY_LONG_TERM_RECALL_QUERY } from "../lib/config";
 import {
   captureActiveTabScreenshot,
   getActiveBrowserTab,
@@ -27,6 +27,10 @@ import {
   loadConversationHistory,
   type HistoryEntry,
 } from "../lib/history";
+import {
+  buildFriendMemoryContext,
+  loadFriendMemoryEntries,
+} from "../lib/friend-memory";
 import { sendMessageToBackground, type ActionResult, type OrchestratorPhase } from "../lib/messaging";
 import {
   loadAutoReadAloudEnabled,
@@ -34,6 +38,7 @@ import {
 } from "../lib/settings";
 import {
   isSpeechRecognitionSupported,
+  startContinuousListening,
   startListening,
   stopListening,
 } from "../lib/speech";
@@ -53,7 +58,7 @@ interface AppProps {
   layout?: "popup" | "sidepanel";
 }
 
-const LIVE_CONVERSATION_RESTART_DELAY_MS = 400;
+const LIVE_CONVERSATION_RESTART_DELAY_MS = 800;
 const LIVE_CONVERSATION_ERROR_RESTART_DELAY_MS = 2000;
 
 // Short pause before re-arming the mic during barge-in listening so the
@@ -61,9 +66,8 @@ const LIVE_CONVERSATION_ERROR_RESTART_DELAY_MS = 2000;
 const BARGE_IN_LISTEN_RESTART_DELAY_MS = 150;
 
 // While the answer is being spoken aloud, the microphone also hears the AI's
-// own voice from the speakers. If the words we transcribe are already part of
-// the answer being read, treat them as that echo and do NOT count them as the
-// user interrupting. Only genuinely new words should trigger a barge-in.
+// own voice from the speakers. Treat overlapping words as echo so we do not
+// type the spoken answer back into the ask box.
 function transcriptLooksLikeSpokenAnswerEcho(
   transcript: string,
   spokenAnswerText: string
@@ -85,7 +89,21 @@ function transcriptLooksLikeSpokenAnswerEcho(
     return false;
   }
 
-  return normalizedSpokenAnswer.includes(normalizedTranscript);
+  if (normalizedSpokenAnswer.includes(normalizedTranscript)) {
+    return true;
+  }
+
+  const transcriptWords = normalizedTranscript.split(" ").filter(Boolean);
+  if (transcriptWords.length === 0) {
+    return true;
+  }
+
+  const spokenAnswerWords = new Set(normalizedSpokenAnswer.split(" ").filter(Boolean));
+  const overlappingWordCount = transcriptWords.filter((word) =>
+    spokenAnswerWords.has(word)
+  ).length;
+
+  return overlappingWordCount / transcriptWords.length >= 0.5;
 }
 
 export default function App({ layout = "popup" }: AppProps) {
@@ -111,13 +129,21 @@ export default function App({ layout = "popup" }: AppProps) {
     DAILY_QUESTION_LIMIT
   );
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [feedbackStatusMessage, setFeedbackStatusMessage] = useState<
+    string | null
+  >(null);
+  const [isFeedbackPending, setIsFeedbackPending] = useState(false);
 
   const pendingVoiceSubmitRef = useRef<string | null>(null);
   const lastFailedQuestionRef = useRef<string | null>(null);
+  const lastAnsweredQuestionRef = useRef<string | null>(null);
+  const lastAnsweredAnswerRef = useRef<string | null>(null);
+  const backgroundMemoryContextRef = useRef<string | null>(null);
   const liveConversationEnabledRef = useRef(false);
   const isLoadingRef = useRef(false);
   const isSpeakingRef = useRef(false);
   const isListeningRef = useRef(false);
+  const voiceInputPausedRef = useRef(false);
   const currentlySpokenAnswerRef = useRef("");
   const conversationSessionRef = useRef<ConversationSession | null>(null);
 
@@ -167,6 +193,8 @@ export default function App({ layout = "popup" }: AppProps) {
         // Session restore is optional.
       });
 
+    void prefetchBackgroundMemory();
+
     function handleOrchestratorStatusMessage(
       message: unknown
     ): void {
@@ -191,6 +219,92 @@ export default function App({ layout = "popup" }: AppProps) {
     };
   }, []);
 
+  async function prefetchBackgroundMemory(): Promise<void> {
+    try {
+      const friendMemoryEntries = await loadFriendMemoryEntries();
+      const localFriendMemoryContext = buildFriendMemoryContext(
+        friendMemoryEntries
+      );
+
+      if (localFriendMemoryContext) {
+        backgroundMemoryContextRef.current = localFriendMemoryContext;
+        return;
+      }
+
+      await sendMessageToBackground({ type: "PING" }).catch(() => {
+        // Wake the service worker before recall.
+      });
+
+      const response = await sendMessageToBackground({
+        type: "RECALL_MEMORY",
+        query: MEMORY_LONG_TERM_RECALL_QUERY,
+      });
+
+      if (response.ok && response.kind === "memory") {
+        const recalledText = response.recalledText.trim();
+        backgroundMemoryContextRef.current =
+          recalledText.length > 0 ? recalledText : null;
+      }
+    } catch {
+      // Memory prefetch is silent — Jarvis still works without it.
+    }
+  }
+
+  async function handleMarkTaskDoneSilently(): Promise<void> {
+    try {
+      await sendMessageToBackground({ type: "MARK_TASK_DONE" });
+      setFeedbackStatusMessage(null);
+      setAnswer(null);
+      setError(null);
+      void prefetchBackgroundMemory();
+    } catch {
+      // Best-effort — user can keep working either way.
+    }
+  }
+
+  async function handleAnswerFeedback(rating: "positive" | "negative"): Promise<void> {
+    const questionForFeedback = lastAnsweredQuestionRef.current;
+    const answerForFeedback = lastAnsweredAnswerRef.current;
+
+    if (!questionForFeedback || !answerForFeedback) {
+      return;
+    }
+
+    setIsFeedbackPending(true);
+    setFeedbackStatusMessage(null);
+
+    try {
+      const response = await sendMessageToBackground({
+        type: "SUBMIT_ANSWER_FEEDBACK",
+        question: questionForFeedback,
+        answer: answerForFeedback,
+        rating,
+      });
+
+      if (response.ok && response.kind === "memory_action") {
+        setFeedbackStatusMessage(response.message);
+      } else if (!response.ok) {
+        setFeedbackStatusMessage(response.error);
+      }
+    } catch (feedbackError) {
+      setFeedbackStatusMessage(
+        feedbackError instanceof Error
+          ? feedbackError.message
+          : "Could not save feedback."
+      );
+    } finally {
+      setIsFeedbackPending(false);
+    }
+  }
+
+  async function bridgeMemorySessionOnConversationEnd(): Promise<void> {
+    try {
+      await sendMessageToBackground({ type: "IMPROVE_MEMORY_SESSION" });
+    } catch {
+      // Best-effort bridge when live conversation ends.
+    }
+  }
+
   useEffect(() => {
     return () => {
       stopLiveConversation();
@@ -198,8 +312,10 @@ export default function App({ layout = "popup" }: AppProps) {
   }, []);
 
   function stopLiveConversation() {
+    const wasLiveConversationEnabled = liveConversationEnabledRef.current;
     liveConversationEnabledRef.current = false;
     setLiveConversationEnabled(false);
+    voiceInputPausedRef.current = false;
     stopListening();
     stopSpeaking();
     isListeningRef.current = false;
@@ -207,6 +323,10 @@ export default function App({ layout = "popup" }: AppProps) {
     currentlySpokenAnswerRef.current = "";
     setIsListening(false);
     setIsSpeaking(false);
+
+    if (wasLiveConversationEnabled) {
+      void bridgeMemorySessionOnConversationEnd();
+    }
   }
 
   function scheduleLiveConversationListening(delayMs: number) {
@@ -243,6 +363,19 @@ export default function App({ layout = "popup" }: AppProps) {
       return;
     }
 
+    if (voiceCommand === "task_done") {
+      interruptSpokenAnswer();
+      setQuestion("");
+      void handleMarkTaskDoneSilently();
+      setVoiceStatusMessage(voiceCommandStatusMessage("task_done"));
+
+      if (liveConversationEnabledRef.current) {
+        scheduleLiveConversationListening(LIVE_CONVERSATION_RESTART_DELAY_MS);
+      }
+
+      return;
+    }
+
     if (voiceCommand === "end") {
       interruptSpokenAnswer();
       setQuestion("");
@@ -261,8 +394,99 @@ export default function App({ layout = "popup" }: AppProps) {
     void handleAsk(finalTranscript, { fromVoice: true });
   }
 
+  function pauseVoiceInput(): void {
+    voiceInputPausedRef.current = true;
+  }
+
+  function resumeVoiceInput(): void {
+    voiceInputPausedRef.current = false;
+  }
+
+  function handleVoiceTranscript(transcript: string, isFinal: boolean): void {
+    const trimmedTranscript = transcript.trim();
+
+    if (voiceInputPausedRef.current) {
+      return;
+    }
+
+    // Live conversation: listen while Jarvis speaks so the user can interrupt.
+    if (isSpeakingRef.current && liveConversationEnabledRef.current) {
+      if (
+        !trimmedTranscript ||
+        transcriptLooksLikeSpokenAnswerEcho(
+          trimmedTranscript,
+          currentlySpokenAnswerRef.current
+        )
+      ) {
+        return;
+      }
+
+      interruptSpokenAnswer();
+      resumeVoiceInput();
+      setQuestion(trimmedTranscript);
+
+      if (isFinal) {
+        handleClassifiedVoiceTranscript(trimmedTranscript);
+      }
+
+      return;
+    }
+
+    if (isSpeakingRef.current) {
+      return;
+    }
+
+    setQuestion(transcript);
+
+    if (!isFinal || !trimmedTranscript) {
+      return;
+    }
+
+    if (liveConversationEnabledRef.current) {
+      handleClassifiedVoiceTranscript(trimmedTranscript);
+      return;
+    }
+
+    pendingVoiceSubmitRef.current = trimmedTranscript;
+  }
+
+  function beginLiveConversationListening(): void {
+    if (!isVoiceSupported || isListeningRef.current) {
+      return;
+    }
+
+    setVoiceStatusMessage(null);
+    setError(null);
+    pendingVoiceSubmitRef.current = null;
+    resumeVoiceInput();
+    isListeningRef.current = true;
+    setIsListening(true);
+
+    startContinuousListening({
+      onTranscript: handleVoiceTranscript,
+      onError: (message) => {
+        if (message.includes("Didn't catch")) {
+          return;
+        }
+
+        setVoiceStatusMessage(message);
+      },
+      onEnd: () => {
+        if (!liveConversationEnabledRef.current) {
+          isListeningRef.current = false;
+          setIsListening(false);
+        }
+      },
+    });
+  }
+
   function beginListeningForQuestion() {
     if (!isVoiceSupported || isLoadingRef.current || isListeningRef.current) {
+      return;
+    }
+
+    if (liveConversationEnabledRef.current) {
+      beginLiveConversationListening();
       return;
     }
 
@@ -273,29 +497,7 @@ export default function App({ layout = "popup" }: AppProps) {
     setIsListening(true);
 
     startListening({
-      onTranscript: (transcript, isFinal) => {
-        // While the answer is being spoken, decide whether this transcript is
-        // the user interrupting (barge-in) or just the AI's own voice echoing
-        // back into the mic.
-        if (isSpeakingRef.current) {
-          const isEcho = transcriptLooksLikeSpokenAnswerEcho(
-            transcript,
-            currentlySpokenAnswerRef.current
-          );
-
-          if (isEcho) {
-            return;
-          }
-
-          // Genuine barge-in — stop talking immediately and capture the user.
-          interruptSpokenAnswer();
-        }
-
-        setQuestion(transcript);
-        if (isFinal && transcript) {
-          pendingVoiceSubmitRef.current = transcript;
-        }
-      },
+      onTranscript: handleVoiceTranscript,
       onError: (message) => {
         const isNoSpeechError = message.includes("Didn't catch");
         isListeningRef.current = false;
@@ -330,6 +532,7 @@ export default function App({ layout = "popup" }: AppProps) {
 
         const isRealUserTranscript =
           !!finalTranscript &&
+          !liveConversationEnabledRef.current &&
           !transcriptLooksLikeSpokenAnswerEcho(
             finalTranscript,
             isSpeakingRef.current ? currentlySpokenAnswerRef.current : ""
@@ -340,8 +543,6 @@ export default function App({ layout = "popup" }: AppProps) {
           return;
         }
 
-        // Still speaking and we only heard echo (or silence) — keep the mic
-        // armed so the user can still interrupt later in the answer.
         if (isSpeakingRef.current) {
           scheduleLiveConversationListening(BARGE_IN_LISTEN_RESTART_DELAY_MS);
           return;
@@ -354,10 +555,17 @@ export default function App({ layout = "popup" }: AppProps) {
     });
   }
 
-  // Speak the answer aloud while keeping the microphone open so the user can
-  // interrupt (barge-in). TTS is started without awaiting it so listening can
-  // run in parallel.
+  // Speak the answer aloud; mic stays active in live mode for barge-in interrupts.
   function startSpeakingWithBargeIn(answerText: string) {
+    if (liveConversationEnabledRef.current) {
+      resumeVoiceInput();
+      if (!isListeningRef.current) {
+        beginLiveConversationListening();
+      }
+    }
+
+    setQuestion("");
+
     currentlySpokenAnswerRef.current = answerText;
     setReadAloudStatusMessage(null);
     isSpeakingRef.current = true;
@@ -368,20 +576,14 @@ export default function App({ layout = "popup" }: AppProps) {
         isSpeakingRef.current = false;
         setIsSpeaking(false);
         currentlySpokenAnswerRef.current = "";
-
-        if (liveConversationEnabledRef.current && !isListeningRef.current) {
-          scheduleLiveConversationListening(LIVE_CONVERSATION_RESTART_DELAY_MS);
-        }
+        setQuestion("");
       },
       onPlaybackError: (message) => {
         isSpeakingRef.current = false;
         setIsSpeaking(false);
         currentlySpokenAnswerRef.current = "";
         setReadAloudStatusMessage(message);
-
-        if (liveConversationEnabledRef.current && !isListeningRef.current) {
-          scheduleLiveConversationListening(LIVE_CONVERSATION_RESTART_DELAY_MS);
-        }
+        setQuestion("");
       },
     }).catch((speechError: unknown) => {
       isSpeakingRef.current = false;
@@ -393,9 +595,6 @@ export default function App({ layout = "popup" }: AppProps) {
           : "Could not read the answer aloud."
       );
     });
-
-    // Arm the microphone alongside playback to catch interruptions.
-    beginListeningForQuestion();
   }
 
   async function handleClearHighlights() {
@@ -425,20 +624,33 @@ export default function App({ layout = "popup" }: AppProps) {
   }
 
   async function startReadingAnswer(answerText: string): Promise<void> {
+    if (!liveConversationEnabledRef.current) {
+      stopListening();
+      isListeningRef.current = false;
+      setIsListening(false);
+    }
+
+    setQuestion("");
     setReadAloudStatusMessage(null);
+    isSpeakingRef.current = true;
     setIsSpeaking(true);
 
     try {
       await speakAnswerText(answerText, {
         onPlaybackEnded: () => {
+          isSpeakingRef.current = false;
           setIsSpeaking(false);
+          setQuestion("");
         },
         onPlaybackError: (message) => {
+          isSpeakingRef.current = false;
           setIsSpeaking(false);
           setReadAloudStatusMessage(message);
+          setQuestion("");
         },
       });
     } catch (speechError) {
+      isSpeakingRef.current = false;
       setIsSpeaking(false);
       setReadAloudStatusMessage(
         speechError instanceof Error
@@ -487,7 +699,7 @@ export default function App({ layout = "popup" }: AppProps) {
     liveConversationEnabledRef.current = true;
     setVoiceStatusMessage(null);
     setError(null);
-    beginListeningForQuestion();
+    beginLiveConversationListening();
   }
 
   function handleSelectHistoryEntry(entry: HistoryEntry) {
@@ -512,9 +724,15 @@ export default function App({ layout = "popup" }: AppProps) {
     }
 
     interruptSpokenAnswer();
-    stopListening();
-    isListeningRef.current = false;
-    setIsListening(false);
+
+    if (liveConversationEnabledRef.current) {
+      pauseVoiceInput();
+    } else {
+      stopListening();
+      isListeningRef.current = false;
+      setIsListening(false);
+    }
+
     setReadAloudStatusMessage(null);
     setQuestion(trimmedQuestion);
     setIsLoading(true);
@@ -572,6 +790,7 @@ export default function App({ layout = "popup" }: AppProps) {
         windowId: activeTab.windowId,
         pageUrl: activeTab.url,
         priorTurns: currentSession.turns,
+        prefetchedMemoryContext: backgroundMemoryContextRef.current,
       });
 
       if (response.ok && response.kind === "ask") {
@@ -579,6 +798,10 @@ export default function App({ layout = "popup" }: AppProps) {
         setHighlightsApplied(response.highlightsApplied);
         setActionResults(response.actionResults);
         lastFailedQuestionRef.current = null;
+        lastAnsweredQuestionRef.current = trimmedQuestion;
+        lastAnsweredAnswerRef.current = response.answer;
+        setFeedbackStatusMessage(null);
+        void prefetchBackgroundMemory();
 
         let updatedSession = appendConversationTurn(currentSession, {
           role: "user",
@@ -647,12 +870,22 @@ export default function App({ layout = "popup" }: AppProps) {
           ? requestError.message
           : "Failed to reach the background worker.";
       setError(message);
+
+      if (liveConversationEnabledRef.current) {
+        resumeVoiceInput();
+      }
     } finally {
       setIsLoading(false);
       setOrchestratorPhase(null);
 
       if (shouldStartListeningAfter && liveConversationEnabledRef.current) {
-        scheduleLiveConversationListening(LIVE_CONVERSATION_RESTART_DELAY_MS);
+        resumeVoiceInput();
+      } else if (
+        liveConversationEnabledRef.current &&
+        !autoReadAloudEnabled &&
+        !isLoadingRef.current
+      ) {
+        resumeVoiceInput();
       }
     }
   }
@@ -675,6 +908,7 @@ export default function App({ layout = "popup" }: AppProps) {
 
     if (isListening) {
       stopListening();
+      isListeningRef.current = false;
       setIsListening(false);
       return;
     }
@@ -762,6 +996,14 @@ export default function App({ layout = "popup" }: AppProps) {
             void handleToggleReadAloud();
           }}
           onRetry={error ? handleRetry : undefined}
+          onFeedbackPositive={() => {
+            void handleAnswerFeedback("positive");
+          }}
+          onFeedbackNegative={() => {
+            void handleAnswerFeedback("negative");
+          }}
+          feedbackStatusMessage={feedbackStatusMessage}
+          isFeedbackPending={isFeedbackPending}
         />
       </main>
 

@@ -4,3 +4,7 @@ compatibility_date = "2024-01-01"
 
 [vars]
 ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
+COGNEE_BASE_URL = "https://tenant-ed0f4e15-bd9e-4dfd-8c28-f6f153720b82.aws.cognee.ai"
+COGNEE_CLOUD_API_URL = "https://api.cognee.ai"
+COGNEE_TENANT_ID = "ed0f4e15-bd9e-4dfd-8c28-f6f153720b82"
+COGNEE_DATASET_NAME = "jarvis_vo"

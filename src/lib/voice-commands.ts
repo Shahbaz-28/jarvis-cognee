@@ -1,6 +1,19 @@
-export type VoiceCommandType = "stop" | "end" | "question";
+export type VoiceCommandType = "stop" | "end" | "task_done" | "question";
 
 const STOP_PHRASES = ["stop", "wait", "be quiet", "pause", "shh", "quiet"];
+
+const TASK_DONE_PHRASES = [
+  "im done with this",
+  "i am done with this",
+  "done with this task",
+  "done with this",
+  "task is done",
+  "task done",
+  "mark task done",
+  "finished this task",
+  "im finished with this",
+  "i am finished with this",
+];
 
 const END_PHRASES = [
   "thanks",
@@ -64,6 +77,10 @@ export function classifyVoiceCommand(transcript: string): VoiceCommandType {
     return "stop";
   }
 
+  if (transcriptMatchesAnyCommandPhrase(normalizedTranscript, TASK_DONE_PHRASES)) {
+    return "task_done";
+  }
+
   if (transcriptMatchesAnyCommandPhrase(normalizedTranscript, END_PHRASES)) {
     return "end";
   }
@@ -80,6 +97,10 @@ export function voiceCommandStatusMessage(
 
   if (commandType === "end") {
     return "Conversation ended";
+  }
+
+  if (commandType === "task_done") {
+    return "Task saved — starting fresh";
   }
 
   return null;
